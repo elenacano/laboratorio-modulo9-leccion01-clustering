@@ -353,7 +353,7 @@ class Clustering:
         Returns:
             - pd.DataFrame. El DataFrame original con una nueva columna para las etiquetas de clusters.
         """
-        kmeans = KMeans(n_clusters=num_clusters)
+        kmeans = KMeans(n_clusters=num_clusters, random_state=42)
         km_fit = kmeans.fit(self.dataframe)
         labels = km_fit.labels_
         dataframe_original["clusters_kmeans"] = labels.astype(str)
@@ -402,10 +402,67 @@ class Clustering:
             distance_threshold=None,
             n_clusters=num_clusters
         )
+
         aglo_fit = modelo.fit(self.dataframe)
         labels = aglo_fit.labels_
         dataframe_original["clusters_agglomerative"] = labels.astype(str)
         return dataframe_original
+    
+    def modelo_aglomerativo(self, clusters_min=2, clusters_max=5, linkage_methods = ['single', 'complete', 'average', 'ward'], distance_metrics = ['euclidean', 'cosine', 'chebyshev']):
+        
+        # Crear un DataFrame para almacenar los resultados
+        results = []
+
+        # Suponiendo que tienes un DataFrame llamado df_copia
+        # Aquí df_copia debería ser tu conjunto de datos
+        # Asegúrate de que esté preprocesado adecuadamente (normalizado si es necesario)
+
+        for linkage_method in linkage_methods:
+            for metric in distance_metrics:
+                for cluster in range(clusters_min, clusters_max):
+                    try:
+                        # Configurar el modelo de AgglomerativeClustering
+                        modelo = AgglomerativeClustering(
+                            linkage=linkage_method,
+                            metric=metric,  
+                            distance_threshold=None,  # Para buscar n_clusters
+                            n_clusters=cluster, # Cambia esto según tu análisis
+                        )
+                        
+                        # Ajustar el modelo
+                        labels = modelo.fit_predict(self.dataframe)
+
+                        # Calcular métricas si hay más de un cluster
+                        if len(np.unique(labels)) > 1:
+                            # Silhouette Score
+                            silhouette_avg = silhouette_score(self.dataframe, labels, metric=metric)
+
+                            # Davies-Bouldin Index
+                            db_score = davies_bouldin_score(self.dataframe, labels)
+
+                            # Cardinalidad (tamaño de cada cluster)
+                            cluster_cardinality = {cluster: sum(labels == cluster) for cluster in np.unique(labels)}
+                        
+                        else:
+                            cluster_cardinality = {'Cluster único': len(self.dataframe)}
+
+                        # Almacenar resultados
+                        results.append({
+                            'linkage': linkage_method,
+                            'metric': metric,
+                            'silhouette_score': silhouette_avg,
+                            'davies_bouldin_index': db_score,
+                            'cluster_cardinality': cluster_cardinality,
+                            'n_cluster': cluster
+                        })
+
+                    except Exception as e:
+                        print(f"Error con linkage={linkage_method}, metric={metric}: {e}")
+
+        results_df = pd.DataFrame(results)
+        results_df = results_df.sort_values(by='silhouette_score', ascending=False)
+
+        return results_df
     
     def modelo_divisivo(self, dataframe_original, threshold=0.5, max_clusters=5):
         """
@@ -481,7 +538,7 @@ class Clustering:
         dataframe_original["clusters_spectral"] = labels.astype(str)
         return dataframe_original
     
-    def modelo_dbscan(self, dataframe_original, eps_values=[0.5, 1.0, 1.5], min_samples_values=[3, 2, 1]):
+    def modelo_dbscan(self, dataframe_original, eps_values=[0.5, 1.0, 1.5], min_samples_values=[5, 10, 15, 20]):
         """
         Aplica DBSCAN al DataFrame y añade las etiquetas de clusters al DataFrame original.
 
@@ -497,6 +554,8 @@ class Clustering:
         best_min_samples = None
         best_silhouette = -1  # Usamos -1 porque la métrica de silueta varía entre -1 y 1
 
+        metrics_results_dbscan = []
+
         # Iterar sobre diferentes combinaciones de eps y min_samples
         for eps in eps_values:
             for min_samples in min_samples_values:
@@ -507,19 +566,34 @@ class Clustering:
                 # Calcular la métrica de silueta, ignorando etiquetas -1 (ruido)
                 if len(set(labels)) > 1 and len(set(labels)) < len(labels):
                     silhouette = silhouette_score(self.dataframe, labels)
+                    davies_bouldin = davies_bouldin_score(self.dataframe, labels)
+                    
+                    unique, counts = np.unique(labels, return_counts=True)
+                    cardinalidad = dict(zip(unique, counts))
+                    metrics_results_dbscan.append({
+                        "eps": eps,
+                        "min_samples": min_samples,
+                        "silhouette_score": silhouette,
+                        "davies_bouldin_score": davies_bouldin,
+                        "cardinality": cardinalidad
+                    })
+                
                 else:
                     silhouette = -1
-
-                # Mostrar resultados (opcional)
-                print(f"eps: {eps}, min_samples: {min_samples}, silhouette: {silhouette}")
-
+                    davies_bouldin = -1
+             
                 # Actualizar el mejor resultado si la métrica de silueta es mejor
                 if silhouette > best_silhouette:
                     best_silhouette = silhouette
                     best_eps = eps
                     best_min_samples = min_samples
 
+        # Mostrar las métricas en un DataFrame para análisis posterior
+        metrics_df_dbscan = pd.DataFrame(metrics_results_dbscan).sort_values(by = "silhouette_score", ascending=False)
+        display(metrics_df_dbscan)
+
         # Aplicar DBSCAN con los mejores parámetros encontrados
+        print(f"best_eps: {best_eps}, best_min_samples: {best_min_samples}")
         best_dbscan = DBSCAN(eps=best_eps, min_samples=best_min_samples)
         best_labels = best_dbscan.fit_predict(self.dataframe)
 
@@ -547,18 +621,22 @@ class Clustering:
             "cardinalidad": [cardinalidad]
         }, index = [0])
     
-    def plot_clusters(self):
+    def plot_clusters(self, df=pd.DataFrame(), col_clusters=None):
+        
+        if df.empty:
+            df = self.diccionario_modelos["kmeans"]
 
-        df_kmeans = self.diccionario_modelos["kmeans"]
-        col_clusters = "clusters_kmeans"
-        columnas_plot = df_kmeans.columns.drop(col_clusters)
+        if col_clusters == None:
+            col_clusters = "clusters_kmeans"
+
+        columnas_plot = df.columns.drop(col_clusters)
         columnas_plot
 
         fig, axes = plt.subplots(nrows=2, ncols=math.ceil(len(columnas_plot)/2), figsize=(20,8))
         axes = axes.flat
 
         for indice, col in enumerate(columnas_plot):
-            df_grop = df_kmeans.groupby(col_clusters)[col].mean().reset_index()
+            df_grop = df.groupby(col_clusters)[col].mean().reset_index()
             sns.barplot(x=col_clusters, y=col, data=df_grop, ax=axes[indice], palette="coolwarm")
             axes[indice].set_title(col)
 
